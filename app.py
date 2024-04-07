@@ -1,16 +1,64 @@
+import json
+import os
+import sys
+from datetime import datetime
+
 from flask import Flask
 import assemblyai as aai
+import pika
+
+from model.analysis import Analysis
+from model.recording import Recording
 
 app = Flask(__name__)
 
 aai.settings.api_key = "17d12fa0b5fd4ead94732c894bca89f8"
 
+# Set up RabbitMQ connection parameters
+rabbitmq_host = 'localhost'
+rabbitmq_exchange = 'amq.direct'
+rabbitmq_queue = 'stt-queue'
+rabbitmq_response_queue = 'stt-response'
 
-@app.route('/transcribe-recording')
-def transcribe():
-    transcriber = aai.Transcriber()
-    transcript = transcriber.transcribe("https://storage.googleapis.com/speechrec-b38d7.appspot.com/4?GoogleAccessId=firebase-adminsdk-l42lb@speechrec-b38d7.iam.gserviceaccount.com&Expires=1722432175&Signature=BWPb1GB0uGm5sL4yPfq5eTVO3E4yfCFUgKN4agTkeKLMCvdqdyTJiwAvgqMFabewGVu9f20BuQ5oEkhTn0xem88QSwMorK9A6tlxTAgVh2D47thDUlmY%2BQZww37FjnlH4SEKJmCQ%2FOkm7OKD49No%2F7FWpAdpXOTU4GaKRoHN31f42dfR0I3CMhimaxyXEDJhoJJIMKEZU4SpHk7IBKU%2BgNtpGxaHap2zxnkh3kcK1cnLf%2FJpDDtbRxLdOXJvkK%2BTgwuyxgwSPkfed6hLCFuucrha1c7Q%2Fodh0L%2FXGy1%2BQzXUGWvce1vrFzkrk92WvYvUg4wD3xAw0h0dkYHhSZfKtw%3D%3D")
-    return transcript.text
+
+def send(body):
+    connection_response = pika.BlockingConnection(
+        pika.ConnectionParameters(host=rabbitmq_host))
+    channel_response = connection_response.channel()
+
+    channel_response.queue_declare(queue=rabbitmq_response_queue, durable=True)
+
+    channel_response.basic_publish(exchange=rabbitmq_exchange, routing_key='stt-response', body=body)
+
+
+def main():
+    connection = pika.BlockingConnection(
+        pika.ConnectionParameters(host=rabbitmq_host))
+    channel = connection.channel()
+    channel.exchange_declare(exchange=rabbitmq_exchange, durable=True)
+    channel.queue_declare(queue=rabbitmq_queue, durable=True)
+
+    def callback(ch, method, properties, body):
+        print(body)
+        recording = Recording(**json.loads(body))
+        # transcriber = aai.Transcriber()
+        # transcript = transcriber.transcribe(recording.recordingURI)
+        analysis_obj = Analysis(0, recording.id, "Test title", "", datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "transcript.text")
+        send(json.dumps(analysis_obj.to_dict()))
+
+    channel.basic_consume(queue=rabbitmq_queue, on_message_callback=callback, auto_ack=True)
+
+    print(' [*] Waiting for messages. To exit press CTRL+C')
+    channel.start_consuming()
+
 
 if __name__ == '__main__':
-    app.run()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print('Interrupted')
+        try:
+            sys.exit(0)
+        except SystemExit:
+            os._exit(0)
