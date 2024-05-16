@@ -9,6 +9,7 @@ import pika
 
 from model.analysis import Analysis
 from model.recording import Recording
+from model.sttMessagePacket import SttMessagePacket
 
 app = Flask(__name__)
 
@@ -40,11 +41,28 @@ def main():
 
     def callback(ch, method, properties, body):
         print(body)
-        recording = Recording(**json.loads(body))
-        # transcriber = aai.Transcriber()
-        # transcript = transcriber.transcribe(recording.recordingURI)
-        analysis_obj = Analysis(0, recording.id, "Test title", "", datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                "transcript.text")
+        try:
+            message = SttMessagePacket.from_dict(json.loads(body))
+            recording = message.recording
+        except json.JSONDecodeError:
+            # Handle the case where it's impossible to parse the JSON
+            # For example, you can print an error message or take other appropriate action
+            print("Error: Unable to parse JSON data.")
+            return
+        transcriber = aai.Transcriber()
+        config = aai.TranscriptionConfig(
+            language_code=message.language,
+            speakers_expected=message.speaker_amount.real,
+            speaker_labels=message.speaker_amount > 1,
+        )
+        if message.generate_summary:
+            summModel = aai.SummarizationModel.conversational if message.speaker_amount > 1 else aai.SummarizationModel.informative
+            config.set_summarize(True, summModel, aai.SummarizationType.bullets_verbose)
+        transcript = transcriber.transcribe(recording.recordingURI, config)
+        print(transcript.json_response)
+        analysis_obj = Analysis(0, recording.id, message.analysis_name, "",
+                                datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                str(json.dumps(transcript.json_response)))
         send(json.dumps(analysis_obj.to_dict()))
 
     channel.basic_consume(queue=rabbitmq_queue, on_message_callback=callback, auto_ack=True)
