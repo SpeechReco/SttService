@@ -32,6 +32,22 @@ def send(body):
     channel_response.basic_publish(exchange=rabbitmq_exchange, routing_key='stt-response', body=body)
 
 
+def getConfig(message):
+    config = aai.TranscriptionConfig()
+    if message.speaker_amount is None or message.speaker_amount == 0:
+        config.set_speaker_diarization(True)
+    else:
+        config.set_speaker_diarization(True, message.speaker_amount.real)
+
+    if message.generate_summary:
+        summModel = aai.SummarizationModel.conversational if message.speaker_amount > 1 else aai.SummarizationModel.informative
+        config.set_summarize(True, summModel, aai.SummarizationType.bullets_verbose)
+    if message.language != "auto":
+        config.language_code = message.language
+
+    return config
+
+
 def main():
     connection = pika.BlockingConnection(
         pika.ConnectionParameters(host=rabbitmq_host))
@@ -50,14 +66,7 @@ def main():
             print("Error: Unable to parse JSON data.")
             return
         transcriber = aai.Transcriber()
-        config = aai.TranscriptionConfig(
-            language_code=message.language,
-            speakers_expected=message.speaker_amount.real,
-            speaker_labels=message.speaker_amount > 1,
-        )
-        if message.generate_summary:
-            summModel = aai.SummarizationModel.conversational if message.speaker_amount > 1 else aai.SummarizationModel.informative
-            config.set_summarize(True, summModel, aai.SummarizationType.bullets_verbose)
+        config = getConfig(message)
         transcript = transcriber.transcribe(recording.recordingURI, config)
         print(transcript.json_response)
         analysis_obj = Analysis(0, recording.id, message.analysis_name, "",
